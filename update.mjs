@@ -17,6 +17,8 @@ const FX_LABEL = "USD/KRW";
 const MARKETS = [
   ["BTC/KRW", "KRW-BTC"],
   ["BTC/USDT", "USDT-BTC"],
+  ["ETH/KRW", "KRW-ETH"],
+  ["ETH/USDT", "USDT-ETH"],
   ["XRP/KRW", "KRW-XRP"],
   ["XRP/USDT", "USDT-XRP"],
   ["USDT/KRW", "KRW-USDT"],
@@ -63,18 +65,26 @@ async function main() {
   const rows = await readHistory();
   const byDate = new Map(rows.map((r) => [r.date, r]));
 
-  // How many daily candles to request: full backfill on the first run,
-  // otherwise just enough to cover any days the workflow missed.
-  let count = MAX_BACKFILL;
-  if (rows.length) {
-    const lastDate = rows.map((r) => r.date).sort().pop();
-    const gapDays = Math.ceil((Date.parse(today) - Date.parse(lastDate)) / DAY_MS);
-    count = Math.min(MAX_BACKFILL, Math.max(3, gapDays + 2));
-  }
+  // How many daily candles to request, per market: a full backfill for a market
+  // that has no history yet (e.g. a newly added coin), otherwise just enough to
+  // cover any days the workflow missed.
+  const lastDateFor = (label) => {
+    let last = null;
+    for (const r of byDate.values()) if (r[label] != null && (!last || r.date > last)) last = r.date;
+    return last;
+  };
 
   // 1) 09:00 KST values = opening price of each daily candle
+  const counts = [];
   await Promise.all(
     MARKETS.map(async ([label, market]) => {
+      let count = MAX_BACKFILL;
+      const last = lastDateFor(label);
+      if (last) {
+        const gapDays = Math.ceil((Date.parse(today) - Date.parse(last)) / DAY_MS);
+        count = Math.min(MAX_BACKFILL, Math.max(3, gapDays + 2));
+      }
+      counts.push(`${label}:${count}`);
       try {
         const candles = await getJson(`${UPBIT}/candles/days?market=${market}&count=${count}`);
         for (const c of candles) {
@@ -132,7 +142,7 @@ async function main() {
   await writeFile(HISTORY_FILE, historyText);
   await writeFile(LATEST_FILE, JSON.stringify({ updated: now.toISOString(), items }, null, 2) + "\n");
 
-  console.log(`history rows: ${out.length}, live items: ${items.length}, candles requested: ${count}`);
+  console.log(`history rows: ${out.length}, live items: ${items.length}, candles requested: ${counts.join(" ")}`);
 }
 
 main().catch((e) => {
