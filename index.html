@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시세 기록 대시보드</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+  /* 한국식 색상: 상승 = 빨강, 하락 = 파랑. 바꾸려면 --up / --down 값만 서로 교체하세요. */
+  :root {
+    --bg: #eef1f4;
+    --panel: #ffffff;
+    --ink: #14202b;
+    --muted: #66727e;
+    --line: #d9dfe5;
+    --tint: #f3f6f9;
+    --up: #d33a2c;
+    --down: #2563c9;
+    --warn: #a15c00;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419;
+      --panel: #161d24;
+      --ink: #e8edf1;
+      --muted: #8a97a3;
+      --line: #26303a;
+      --tint: #1b242d;
+      --up: #ff6b5e;
+      --down: #6aa5ff;
+      --warn: #f0b34a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 28px 20px 40px; }
+
+  .top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; }
+  .meta { color: var(--muted); font-size: 0.85rem; }
+  .badge { margin-left: 8px; padding: 1px 8px; border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; font-size: 0.78rem; }
+
+  .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: start; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+
+  /* 왼쪽: 관심 종목 목록 */
+  .watch { list-style: none; margin: 0; padding: 0; }
+  .watch li + li { border-top: 1px solid var(--line); }
+  .watch button {
+    all: unset; box-sizing: border-box; cursor: pointer; width: 100%;
+    display: grid; grid-template-columns: 1fr auto; column-gap: 12px; row-gap: 2px;
+    padding: 14px 16px 14px 13px; border-left: 3px solid transparent;
+  }
+  .watch button:hover { background: var(--tint); }
+  .watch button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .watch button[aria-current="true"] { background: var(--tint); border-left-color: var(--ink); }
+  .w-name { font-weight: 600; }
+  .w-price { text-align: right; font-weight: 600; font-size: 1.05rem; }
+  .w-base { color: var(--muted); font-size: 0.8rem; }
+  .w-delta { text-align: right; font-size: 0.85rem; font-weight: 600; }
+
+  .up { color: var(--up); }
+  .down { color: var(--down); }
+  .flat { color: var(--muted); }
+
+  /* 오른쪽: 차트와 표 */
+  .stack { display: grid; gap: 20px; min-width: 0; }
+  .chart-panel { padding: 16px 18px 12px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  h2 { margin: 0; font-size: 1.05rem; font-weight: 700; }
+  .ranges { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .ranges button {
+    all: unset; box-sizing: border-box; cursor: pointer; padding: 4px 12px; font-size: 0.85rem; color: var(--muted);
+  }
+  .ranges button + button { border-left: 1px solid var(--line); }
+  .ranges button:hover { background: var(--tint); }
+  .ranges button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .ranges button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
+
+  .chart-wrap { position: relative; height: 340px; }
+  .msg { margin: 0; padding: 40px 12px; text-align: center; color: var(--muted); }
+
+  .table-panel { padding: 16px 18px 8px; }
+  .table-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; font-size: 0.82rem; }
+
+  footer { margin-top: 20px; color: var(--muted); font-size: 0.8rem; }
+  footer a { color: inherit; }
+
+  @media (max-width: 820px) {
+    .layout { grid-template-columns: 1fr; }
+    .chart-wrap { height: 280px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>시세 기록 대시보드</h1>
+    <div class="meta"><span id="updated">불러오는 중…</span><span id="stale" class="badge" hidden>갱신 지연</span></div>
+  </header>
+
+  <div class="layout">
+    <section class="panel" aria-label="종목 목록">
+      <ul id="watch" class="watch"></ul>
+    </section>
+
+    <div class="stack">
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <h2 id="chart-title">09:00 기준 추이</h2>
+          <div class="ranges" role="group" aria-label="기간">
+            <button type="button" data-days="30" aria-pressed="false">30일</button>
+            <button type="button" data-days="90" aria-pressed="true">90일</button>
+            <button type="button" data-days="0" aria-pressed="false">전체</button>
+          </div>
+        </div>
+        <div id="chart-wrap" class="chart-wrap"><canvas id="chart"></canvas></div>
+        <p id="chart-msg" class="msg" hidden></p>
+      </section>
+
+      <section class="panel table-panel">
+        <h2 id="table-title">일별 기록</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>날짜</th><th>09:00 값</th><th>전일 대비</th><th>증감률</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    시세: 업비트 · 09:00 값은 업비트 일봉 시가(일봉은 09:00 KST에 시작) · 상승 빨강, 하락 파랑 ·
+    환율: <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates By Exchange Rate API</a> (하루 1회 갱신)
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(() => {
+  const STALE_MINUTES = 90;
+  const REFRESH_MS = 2 * 60 * 1000;
+
+  const state = { latest: null, history: [], label: null, days: 90, chart: null };
+  const $ = (id) => document.getElementById(id);
+  const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  const fmt = (v) => {
+    if (typeof v !== "number" || Number.isNaN(v)) return "–";
+    const a = Math.abs(v);
+    const digits = a >= 1e6 ? 0 : a >= 1000 ? 2 : a >= 1 ? 4 : 6;
+    return v.toLocaleString("ko-KR", { maximumFractionDigits: digits });
+  };
+  const signed = (v) => (v > 0 ? "+" : "") + fmt(v);
+  const pct = (r) => (r == null ? "–" : (r > 0 ? "+" : "") + (r * 100).toFixed(2) + "%");
+  const tone = (r) => (r == null || r === 0 ? "flat" : r > 0 ? "up" : "down");
+
+  async function loadJson(url) {
+    const res = await fetch(url + "?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error(url + " " + res.status);
+    return res.json();
+  }
+
+  // 종목별 09:00 값 배열 + 전일 대비 계산
+  function seriesFor(label) {
+    const pts = state.history.filter((r) => typeof r[label] === "number").map((r) => ({ date: r.date, v: r[label] }));
+    return pts.map((p, i) => ({
+      date: p.date,
+      v: p.v,
+      prev: i > 0 ? pts[i - 1].v : null,
+      r: i > 0 && pts[i - 1].v !== 0 ? p.v / pts[i - 1].v - 1 : null,
+    }));
+  }
+
+  function renderHeader() {
+    const el = $("updated");
+    const stale = $("stale");
+    if (!state.latest) {
+      el.textContent = "데이터를 불러오지 못했습니다";
+      stale.hidden = true;
+      return;
+    }
+    const t = new Date(state.latest.updated);
+    el.textContent = "업데이트 " + t.toLocaleString("ko-KR", {
+      timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+    }) + " KST";
+    stale.hidden = (Date.now() - t.getTime()) / 60000 <= STALE_MINUTES;
+  }
+
+  function renderWatch() {
+    const list = $("watch");
+    if (!state.latest) {
+      list.innerHTML = '<li><p class="msg">시세를 불러오지 못했습니다. GitHub의 Actions 탭에서 실행 결과를 확인해 주세요.</p></li>';
+      return;
+    }
+    list.innerHTML = state.latest.items.map((it) => {
+      const s = seriesFor(it.label);
+      const base = s.length ? s[s.length - 1] : null;
+      let delta = '<span class="flat">–</span>';
+      if (it.daily) delta = '<span class="flat">하루 1회 갱신</span>';
+      else if (base && base.v) {
+        const r = it.price / base.v - 1;
+        delta = `<span class="${tone(r)}">${pct(r)}</span>`;
+      }
+      const baseText = base ? `${base.date.slice(5)} 09:00 · ${fmt(base.v)}` : "기록 없음";
+      const current = it.label === state.label ? ' aria-current="true"' : "";
+      return `<li><button type="button" data-label="${it.label}"${current}>
+        <span class="w-name">${it.label}</span><span class="w-price">${fmt(it.price)}</span>
+        <span class="w-base">${baseText}</span><span class="w-delta">${delta}</span>
+      </button></li>`;
+    }).join("");
+  }
+
+  function showChartMessage(text) {
+    $("chart-wrap").hidden = true;
+    const m = $("chart-msg");
+    m.textContent = text;
+    m.hidden = false;
+  }
+
+  function renderChart() {
+    if (state.chart) { state.chart.destroy(); state.chart = null; }
+    $("chart-title").textContent = (state.label || "") + " 09:00 기준 추이";
+
+    const full = state.label ? seriesFor(state.label) : [];
+    const s = state.days > 0 ? full.slice(-state.days) : full;
+
+    if (typeof Chart === "undefined") return showChartMessage("차트 라이브러리를 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.");
+    if (!s.length) return showChartMessage("이 종목의 기록이 아직 없습니다.");
+
+    $("chart-wrap").hidden = false;
+    $("chart-msg").hidden = true;
+
+    const ink = cssVar("--ink"), muted = cssVar("--muted"), line = cssVar("--line"), up = cssVar("--up"), down = cssVar("--down");
+    Chart.defaults.color = muted;
+    Chart.defaults.borderColor = line;
+    Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+
+    state.chart = new Chart($("chart"), {
+      data: {
+        labels: s.map((p) => p.date.slice(5)),
+        datasets: [
+          {
+            type: "line", label: "09:00 값", data: s.map((p) => p.v), yAxisID: "y", order: 0,
+            borderColor: ink, backgroundColor: ink, borderWidth: 2, tension: 0.2,
+            pointRadius: s.length > 60 ? 0 : 3, pointHoverRadius: 5,
+          },
+          {
+            type: "bar", label: "전일 대비 증감률", data: s.map((p) => (p.r == null ? null : p.r * 100)), yAxisID: "y1", order: 1,
+            backgroundColor: (c) => (c.raw >= 0 ? up : down), borderWidth: 0, maxBarThickness: 14,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8 } },
+          tooltip: {
+            callbacks: {
+              title: (items) => s[items[0].dataIndex].date + " 09:00",
+              label: (c) => c.datasetIndex === 0
+                ? " 값 " + fmt(c.raw)
+                : " 전일 대비 " + (c.raw == null ? "–" : (c.raw > 0 ? "+" : "") + c.raw.toFixed(2) + "%"),
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+          y: { position: "left", grace: "5%", ticks: { callback: (v) => fmt(v) } },
+          y1: { position: "right", grid: { drawOnChartArea: false }, ticks: { callback: (v) => v.toFixed(1) + "%" } },
+        },
+      },
+    });
+  }
+
+  function renderTable() {
+    $("table-title").textContent = (state.label || "") + " 일별 기록";
+    const full = state.label ? seriesFor(state.label) : [];
+    const body = $("rows");
+    if (!full.length) {
+      body.innerHTML = '<tr><td colspan="4" class="flat">기록이 아직 없습니다.</td></tr>';
+      return;
+    }
+    body.innerHTML = full.slice(-60).reverse().map((p) => `<tr>
+      <td>${p.date}</td><td>${fmt(p.v)}</td>
+      <td class="${tone(p.r)}">${p.prev == null ? "–" : signed(p.v - p.prev)}</td>
+      <td class="${tone(p.r)}">${pct(p.r)}</td></tr>`).join("");
+  }
+
+  function renderAll() {
+    const labels = state.latest ? state.latest.items.map((i) => i.label) : [];
+    if (!state.label || (labels.length && !labels.includes(state.label))) state.label = labels[0] || null;
+    renderHeader();
+    renderWatch();
+    renderChart();
+    renderTable();
+  }
+
+  async function refresh() {
+    const [latest, hist] = await Promise.allSettled([loadJson("data/latest.json"), loadJson("data/history.json")]);
+    if (latest.status === "fulfilled") state.latest = latest.value;
+    if (hist.status === "fulfilled") state.history = hist.value.rows || [];
+    renderAll();
+  }
+
+  $("watch").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-label]");
+    if (!btn) return;
+    state.label = btn.dataset.label;
+    renderWatch();
+    renderChart();
+    renderTable();
+  });
+
+  document.querySelectorAll(".ranges button").forEach((b) => {
+    b.addEventListener("click", () => {
+      state.days = Number(b.dataset.days);
+      document.querySelectorAll(".ranges button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      renderChart();
+    });
+  });
+
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderChart);
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
