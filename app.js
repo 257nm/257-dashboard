@@ -4,8 +4,6 @@
   const STALE_MINUTES = 90;
   const REFRESH_MS = 2 * 60 * 1000;
   const STORE_KEY = "cryptoDash.portfolio.v1";
-  const ENCRYPTED_STORE_KEY = "cryptoDash.portfolio.enc.v2";
-  let encryptionPassword = null;
   const TAB_KEY = "cryptoDash.tab";
   const BASELINE = "0000-00-00"; // 처음 저장한 수량: 모든 과거 날짜에 적용
 
@@ -22,14 +20,13 @@
   };
 
   const $ = (id) => document.getElementById(id);
-
-  // 외부에서 받은 값은 HTML로 해석하지 않도록 이스케이프합니다.
-  // (가격 데이터/라벨이 변조되더라도 DOM XSS로 이어지는 것을 방지)
-  const esc = (value) => String(value ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  // data/*.json is written by our own GitHub Actions workflow, but every value that
+  // ends up inside innerHTML is still escaped before insertion. This is defense in
+  // depth: it means a corrupted or tampered data file can't inject markup/script.
+  const escapeHtml = (s) =>
+    String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   /* ---------- 표시 형식 ---------- */
   const fmt = (v) => {
@@ -69,42 +66,15 @@
   function storageWorks() {
     try { localStorage.setItem("__t", "1"); localStorage.removeItem("__t"); return true; } catch (e) { return false; }
   }
-  const b64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
-  const unb64 = (text) => Uint8Array.from(atob(text), c => c.charCodeAt(0));
-  async function deriveKey(password, salt) {
-    const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
-    return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  }
-  async function encryptEntries(entries, password) {
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await deriveKey(password, salt);
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify({ version: 2, entries })));
-    return JSON.stringify({ version: 2, salt: b64(salt), iv: b64(iv), ciphertext: b64(ciphertext) });
-  }
-  async function decryptEntries(record, password) {
-    const key = await deriveKey(password, unb64(record.salt));
-    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(record.iv) }, key, unb64(record.ciphertext));
-    return sanitizeEntries(JSON.parse(new TextDecoder().decode(plain)).entries);
-  }
-  async function unlock() {
-    const raw = localStorage.getItem(ENCRYPTED_STORE_KEY);
-    if (!raw) return true;
-    const password = prompt("자산 데이터 암호를 입력하세요. 암호를 잊으면 복구할 수 없습니다.");
-    if (!password) return false;
-    try { state.entries = await decryptEntries(JSON.parse(raw), password); encryptionPassword = password; return true; }
-    catch (e) { alert("암호가 틀렸거나 백업 데이터가 손상되었습니다."); return false; }
-  }
-  async function persist() {
+  function loadEntries() {
     try {
-      if (!encryptionPassword) {
-        encryptionPassword = prompt("처음 저장합니다. 자산 데이터 암호를 설정하세요. 암호를 잊으면 복구할 수 없습니다.");
-        if (!encryptionPassword || encryptionPassword.length < 8) { encryptionPassword = null; flash("암호는 8자 이상이어야 합니다."); return false; }
-      }
-      localStorage.setItem(ENCRYPTED_STORE_KEY, await encryptEntries(state.entries, encryptionPassword));
-      localStorage.removeItem(STORE_KEY);
-      return true;
-    } catch (e) { return false; }
+      const raw = localStorage.getItem(STORE_KEY);
+      return raw ? sanitizeEntries(JSON.parse(raw).entries) : [];
+    } catch (e) { return []; }
+  }
+  function persist() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ version: 1, entries: state.entries })); return true; }
+    catch (e) { return false; }
   }
   function holdingsAt(date) {
     let h = null;
@@ -115,8 +85,8 @@
 
   /* ---------- 입력 칸 ---------- */
   function buildInputs(h) {
-    $("inputs").innerHTML = ASSETS.map((a) => `<tr><th scope="row">${esc(a)}</th>${LOCATIONS.map(([k, name]) =>
-      `<td><input type="text" inputmode="decimal" autocomplete="off" placeholder="0" data-asset="${a}" data-loc="${k}" aria-label="${esc(name)} ${esc(a)} 수량" value="${h && h[a][k] ? h[a][k] : ""}"></td>`
+    $("inputs").innerHTML = ASSETS.map((a) => `<tr><th scope="row">${a}</th>${LOCATIONS.map(([k, name]) =>
+      `<td><input type="text" inputmode="decimal" autocomplete="off" placeholder="0" data-asset="${a}" data-loc="${k}" aria-label="${name} ${a} 수량" value="${h && h[a][k] ? h[a][k] : ""}"></td>`
     ).join("")}</tr>`).join("");
   }
   function readInputs() {
@@ -169,39 +139,34 @@
     } else {
       state.entries.push({ from: nextDay(dayLabel()), savedAt: nowIso, holdings: h });
     }
-    persist().then(ok => { flash(ok ? "암호화하여 저장했습니다." : "저장하지 못했습니다. 암호 또는 브라우저 저장 상태를 확인하세요."); renderPortfolio(); });
+    flash(persist() ? "저장했습니다." : "저장하지 못했습니다. 브라우저가 저장을 막고 있습니다.");
+    renderPortfolio();
   }
 
-  async function exportBackup() {
-    if (!encryptionPassword) { encryptionPassword = prompt("백업 암호를 설정/입력하세요(8자 이상)."); }
-    if (!encryptionPassword || encryptionPassword.length < 8) { flash("백업 암호는 8자 이상이어야 합니다."); return; }
-    try {
-      const blob = new Blob([await encryptEntries(state.entries, encryptionPassword)], { type: "application/json" });
-      const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-      a.download = "portfolio-backup-encrypted-" + dayLabel() + ".json";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000); flash("암호화 백업 파일을 내려받았습니다.");
-    } catch (e) { flash("암호화 백업에 실패했습니다."); }
+  function exportBackup() {
+    const blob = new Blob([JSON.stringify({ version: 1, entries: state.entries }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "portfolio-backup-" + dayLabel() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    flash("백업 파일을 내려받았습니다.");
   }
 
-  async function importBackup(file) {
+  function importBackup(file) {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = async () => {
+    reader.onload = () => {
       let entries;
-      try {
-        const parsed = JSON.parse(String(reader.result));
-        if (parsed.version === 2 && parsed.ciphertext) {
-          const password = prompt("백업 파일 암호를 입력하세요.");
-          if (!password) return;
-          entries = await decryptEntries(parsed, password);
-          encryptionPassword = password;
-        } else { entries = sanitizeEntries(parsed.entries); }
-      } catch (e) { entries = []; }
-      if (!entries.length) { flash("백업 파일을 읽지 못했거나 암호가 틀렸습니다."); return; }
+      try { entries = sanitizeEntries(JSON.parse(String(reader.result)).entries); } catch (e) { entries = []; }
+      if (!entries.length) { flash("백업 파일을 읽지 못했습니다."); return; }
       if (state.entries.length && !confirm("현재 저장된 수량과 변경 이력을 백업 내용으로 바꿉니다. 계속할까요?")) return;
       state.entries = entries;
-      persist().then(ok => { flash(ok ? "백업을 암호화하여 가져왔습니다." : "가져왔지만 저장하지 못했습니다."); buildInputs(entries[entries.length - 1].holdings); renderPortfolio(); });
+      flash(persist() ? "백업을 가져왔습니다." : "가져왔지만 이 브라우저에 저장하지 못했습니다.");
+      buildInputs(entries[entries.length - 1].holdings);
+      renderPortfolio();
     };
     reader.readAsText(file);
   }
@@ -358,7 +323,7 @@
     }
 
     $("asset-rows").innerHTML = rows.map((r) => `<tr>
-      <th scope="row">${esc(r.a)}</th><td>${fmtQty(r.q)}</td><td>${fmt(r.pu)}</td><td>${fmt(r.pk)}</td>
+      <th scope="row">${r.a}</th><td>${fmtQty(r.q)}</td><td>${fmt(r.pu)}</td><td>${fmt(r.pk)}</td>
       <td>${fmtUsdt(r.vu)}</td><td>${fmtKrw(r.vk)}</td></tr>`).join("");
     $("asset-foot").innerHTML = `<tr><th scope="row">합계</th><td></td><td></td><td></td>
       <td>${ready ? fmtUsdt(sumU) : "–"}</td><td>${ready ? fmtKrw(sumK) : "–"}</td></tr>`;
@@ -372,7 +337,7 @@
         if (r.pk != null) vk += q * r.pk;
       }
       const share = sumK > 0 ? (vk / sumK * 100).toFixed(1) + "%" : "–";
-      return `<tr><th scope="row">${esc(name)}</th><td>${ready ? fmtUsdt(vu) : "–"}</td><td>${ready ? fmtKrw(vk) : "–"}</td><td>${share}</td></tr>`;
+      return `<tr><th scope="row">${name}</th><td>${ready ? fmtUsdt(vu) : "–"}</td><td>${ready ? fmtKrw(vk) : "–"}</td><td>${share}</td></tr>`;
     }).join("");
   }
 
@@ -398,7 +363,7 @@
     const f = krw ? fmtKrw : fmtUsdt;
     const sg = (v) => (v > 0 ? "+" : "") + f(v);
     body.innerHTML = full.slice(-60).reverse().map((p) => `<tr>
-      <td>${p.date}</td><td>${f(p.v)}</td>
+      <td>${escapeHtml(p.date)}</td><td>${f(p.v)}</td>
       <td class="${tone(p.r)}">${p.prev == null ? "–" : sg(p.v - p.prev)}</td>
       <td class="${tone(p.r)}">${pct(p.r)}</td></tr>`).join("");
   }
@@ -421,11 +386,12 @@
         const r = it.price / base.v - 1;
         delta = `<span class="${tone(r)}">${pct(r)}</span>`;
       }
-      const baseText = base ? `${base.date.slice(5)} 09:00 · ${fmt(base.v)}` : "기록 없음";
+      const baseText = base ? `${escapeHtml(base.date.slice(5))} 09:00 · ${fmt(base.v)}` : "기록 없음";
       const current = it.label === state.label ? ' aria-current="true"' : "";
-      return `<li><button type="button" data-label="${esc(it.label)}"${current}>
-        <span class="w-name">${esc(it.label)}</span><span class="w-price">${fmt(it.price)}</span>
-        <span class="w-base">${esc(baseText)}</span><span class="w-delta">${delta}</span>
+      const label = escapeHtml(it.label);
+      return `<li><button type="button" data-label="${label}"${current}>
+        <span class="w-name">${label}</span><span class="w-price">${fmt(it.price)}</span>
+        <span class="w-base">${baseText}</span><span class="w-delta">${delta}</span>
       </button></li>`;
     }).join("");
   }
@@ -447,7 +413,7 @@
     const body = $("rows");
     if (!full.length) { body.innerHTML = '<tr><td colspan="4" class="flat">기록이 아직 없습니다.</td></tr>'; return; }
     body.innerHTML = full.slice(-60).reverse().map((p) => `<tr>
-      <td>${p.date}</td><td>${fmt(p.v)}</td>
+      <td>${escapeHtml(p.date)}</td><td>${fmt(p.v)}</td>
       <td class="${tone(p.r)}">${p.prev == null ? "–" : signed(p.v - p.prev)}</td>
       <td class="${tone(p.r)}">${pct(p.r)}</td></tr>`).join("");
   }
@@ -532,27 +498,14 @@
 
   /* ---------- 시작 ---------- */
   state.storageOk = storageWorks();
-  (async () => {
-    if (!state.storageOk) { flash("브라우저 저장 기능을 사용할 수 없습니다."); }
-    const encrypted = state.storageOk ? localStorage.getItem(ENCRYPTED_STORE_KEY) : null;
-    if (encrypted) {
-      if (!(await unlock())) return;
-    } else {
-      try {
-        const legacy = state.storageOk ? localStorage.getItem(STORE_KEY) : null;
-        state.entries = legacy ? sanitizeEntries(JSON.parse(legacy).entries) : [];
-        if (state.entries.length) {
-          const ok = await persist();
-          if (!ok) { flash("기존 데이터 암호화에 실패했습니다."); return; }
-        }
-      } catch (e) { state.entries = []; }
-    }
-    const lastEntry = state.entries[state.entries.length - 1];
-    buildInputs(lastEntry ? lastEntry.holdings : null);
-    let startTab = "pf";
-    try { if (localStorage.getItem(TAB_KEY) === "px") startTab = "px"; } catch (e) {}
-    showTab(startTab);
-    refresh();
-    setInterval(refresh, REFRESH_MS);
-  })();
+  state.entries = state.storageOk ? loadEntries() : [];
+  const lastEntry = state.entries[state.entries.length - 1];
+  buildInputs(lastEntry ? lastEntry.holdings : null);
+
+  let startTab = "pf";
+  try { if (localStorage.getItem(TAB_KEY) === "px") startTab = "px"; } catch (e) { /* 무시 */ }
+  showTab(startTab);
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
 })();
