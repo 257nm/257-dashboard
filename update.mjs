@@ -30,33 +30,21 @@ const MAX_BACKFILL = 200; // Upbit returns at most 200 candles per request
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const REQUEST_TIMEOUT_MS = 15_000; // a hung upstream request must not stall the whole run
 
 async function getJson(url, tries = 3) {
   let lastError;
   for (let i = 0; i < tries; i++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
       if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-      const body = await res.json();
-      return body;
+      return await res.json();
     } catch (e) {
-      lastError = e.name === "AbortError" ? new Error(`timeout after ${REQUEST_TIMEOUT_MS}ms for ${url}`) : e;
+      lastError = e;
       await sleep(1000 * (i + 1));
-    } finally {
-      clearTimeout(timer);
     }
   }
   throw lastError;
 }
-
-// A number we're willing to write into the committed history/latest files.
-// Guards against a malformed or unexpected upstream response (wrong type,
-// null, NaN, a negative/zero price, Infinity) silently corrupting the data
-// files that the front-end trusts and renders without further validation.
-const isFinitePositive = (n) => typeof n === "number" && Number.isFinite(n) && n > 0;
 
 async function readHistory() {
   try {
@@ -99,13 +87,8 @@ async function main() {
       counts.push(`${label}:${count}`);
       try {
         const candles = await getJson(`${UPBIT}/candles/days?market=${market}&count=${count}`);
-        if (!Array.isArray(candles)) throw new Error("unexpected response shape (not an array)");
         for (const c of candles) {
-          const date = typeof c?.candle_date_time_kst === "string" ? c.candle_date_time_kst.slice(0, 10) : null;
-          if (!date || !isFinitePositive(c.opening_price)) {
-            console.warn(`candles ${label}: skipping malformed row ${JSON.stringify(c)}`);
-            continue;
-          }
+          const date = c.candle_date_time_kst.slice(0, 10);
           const row = byDate.get(date) ?? { date };
           row[label] = c.opening_price;
           byDate.set(date, row);
@@ -120,9 +103,7 @@ async function main() {
   const tickers = await Promise.all(
     MARKETS.map(async ([label, market]) => {
       try {
-        const body = await getJson(`${UPBIT}/ticker?markets=${market}`);
-        const t = Array.isArray(body) ? body[0] : null;
-        if (!isFinitePositive(t?.trade_price)) throw new Error("unexpected or missing trade_price");
+        const [t] = await getJson(`${UPBIT}/ticker?markets=${market}`);
         return { label, price: t.trade_price, unit: market.split("-")[0] };
       } catch (e) {
         console.warn(`ticker ${label}: ${e.message}`);
@@ -137,12 +118,10 @@ async function main() {
   // so today's row gets the first value seen on or after 09:00 KST.
   try {
     const fx = (await getJson(FX_URL))?.rates?.KRW;
-    if (isFinitePositive(fx)) {
+    if (typeof fx === "number") {
       items.push({ label: FX_LABEL, price: fx, unit: "KRW", daily: true });
       const todayRow = byDate.get(today);
       if (todayRow && todayRow[FX_LABEL] == null) todayRow[FX_LABEL] = fx;
-    } else {
-      console.warn(`fx: unexpected or missing rate in response`);
     }
   } catch (e) {
     console.warn(`fx: ${e.message}`);
